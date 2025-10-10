@@ -1,0 +1,26 @@
+{
+  "magic": 25000101,
+  "symbol": "BTC-USDT",
+  "tf": "1m",
+  "status": "FLAT",
+  "lots": 0.0,
+  "open_price": null,
+  "tp": null,
+  "sl": null,
+  "open_time": null,
+  "open_pl": 0.0,
+  "est_lots": 0.0,
+  "last_close": {
+    "ticket": "2934298891749953536",
+    "ordId": "2934300879246069760",
+    "symbol": "BTC-USDT",
+    "lots": 0.00132123,
+    "open_price": 123445.53439976384,
+    "close_price": 123506.01679571309,
+    "open_time": "2025-10-08T19:22:02Z",
+    "close_time": "2025-10-08T19:23:01Z",
+    "net": -0.24636864,
+    "result": "loss",
+    "exit_type": "Exit Signal"
+  }
+}

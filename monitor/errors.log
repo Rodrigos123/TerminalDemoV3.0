@@ -1,0 +1,2 @@
+{"ts": "2025-10-05T19:58:19Z", "module": "terminal", "msg": "shutdown"}
+{"ts": "2025-10-06T18:26:01Z", "module": "engine", "msg": "open_order_failed", "error": "1 All operations failed"}
