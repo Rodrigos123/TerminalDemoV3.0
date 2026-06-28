@@ -1,76 +1,154 @@
-# utils/okx_data_cache.py — cache de mercado y escritura CSV con ts ISO Z
-from __future__ import annotations
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-from utils.common import parse_ohlcv_row, format_ohlcv_csv_row, get_ohlcv_header
+# utils/okx_data_cache.py
+# -*- coding: utf-8 -*-
+"""
+Caché único y compartido de mercado para todo el sistema.
+- Thread-safe.
+- Una sola fuente de verdad para velas y último precio por símbolo.
+- Sin funciones duplicadas ni modos alternos: esta es la API oficial.
 
-TF_TO_BAR = {
-    "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
-    "1H": "1H", "4H": "4H", "6H": "6H", "12H": "12H",
-    "1D": "1D", "1W": "1W", "1M": "1M",
-    # acepta minúsculas comunes también
-    "1h": "1H", "4h": "4H", "6h": "6H", "12h": "12H", "1d": "1D", "1w": "1W", "1mth": "1M",
-}
+Estructuras:
+- Velas por clave (symbol, tf): deque de tuplas (ts_open_ms, open, high, low, close, volume)
+- Último precio por símbolo: float + ts_ms de actualización
+
+Uso:
+    from utils.okx_data_cache import get_shared_cache
+
+    cache = get_shared_cache()
+    cache.put_last_price("BTC-USDT", 64321.5)
+    cache.put_candle("BTC-USDT", "1m", (ts, o, h, l, c, v))
+    candles = cache.get_candles("BTC-USDT", "1m", 500)
+    px = cache.get_last_price("BTC-USDT")
+"""
+
+from __future__ import annotations
+
+import threading
+from collections import defaultdict, deque
+from typing import Deque, Dict, List, Optional, Tuple
+
+# Tipos y validaciones básicas
+Candle = Tuple[int, float, float, float, float, float]  # ts_open_ms, o, h, l, c, v
+_VALID_TFS = {"1m", "5m", "15m", "1h", "4h", "1d"}
+
 
 class MarketDataCache:
-    def __init__(self, client, data_dir: Path, persist: bool = True, max_keep: int = 5000) -> None:
-        self.client = client
-        self.data_dir = Path(data_dir)
-        self.persist = bool(persist)
-        self.max_keep = int(max_keep)
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+    """
+    Caché compartido por símbolo y TF. Thread-safe.
+    Reglas:
+      - put_candle reemplaza la vela si llega con el mismo ts que la última.
+      - Ignora velas antiguas (ts < última).
+      - get_candles devuelve lista (copia) para no exponer estructuras internas.
+    """
 
-    def _file_path(self, symbol: str, timeframe: str) -> Path:
-        sym = symbol.replace("/", "-")
-        tf = timeframe
-        return self.data_dir / f"{sym}_{tf}.csv"
+    def __init__(self, maxlen_per_series: int = 5000) -> None:
+        self._lock = threading.RLock()
+        self._candles: Dict[Tuple[str, str], Deque[Candle]] = defaultdict(
+            lambda: deque(maxlen=maxlen_per_series)
+        )
+        self._last_price: Dict[str, float] = {}
+        self._last_ts: Dict[str, int] = {}
 
-    def _fetch(self, symbol: str, timeframe: str, limit: int = 300) -> List[Dict[str, Any]]:
-        bar = TF_TO_BAR.get(timeframe, timeframe)
-        res = self.client._request("GET", "/api/v5/market/candles", params={"instId": symbol, "bar": bar, "limit": limit}, signed=False)
-        rows = []
-        # OKX devuelve data ordenada desc (más reciente primero). Normalizamos a ascendente.
-        for raw in reversed(res.data):
-            rows.append(parse_ohlcv_row(raw))
-        return rows
+    # -------------------- Writers --------------------
 
-    def update_and_get_ohlcv(self, symbol: str, timeframe: str, limit: int = 300) -> List[Dict[str, Any]]:
-        rows = self._fetch(symbol, timeframe, limit=limit)
-        if self.persist:
-            fp = self._file_path(symbol, timeframe)
-            header = get_ohlcv_header()
-            # Escribimos siempre ISO sin milisegundos, p.ej. 2025-10-04T13:46:54Z
-            if not fp.exists():
-                fp.write_text(header + "\n", encoding="utf-8")
-            # Fusionar por ts_ms único
-            existing = {}
-            if fp.exists():
-                lines = fp.read_text(encoding="utf-8").splitlines()
-                for line in lines[1:]:
-                    if not line.strip():
-                        continue
-                    parts = line.split(",")
-                    if len(parts) < 7:  # ts_iso,ts_ms,open,high,low,close,volume
-                        continue
-                    try:
-                        ts_ms = int(parts[1])
-                        existing[ts_ms] = line
-                    except Exception:
-                        continue
-            for parsed in rows:
-                ts_ms = parsed.get("ts_ms")
-                if ts_ms is None:
-                    continue
-                line = format_ohlcv_csv_row(parsed)  # -> ISO Z sin milisegundos
-                existing[ts_ms] = line
-            # limitar tamaño
-            items = sorted(existing.items(), key=lambda kv: kv[0])[-self.max_keep:]
-            with fp.open("w", encoding="utf-8") as f:
-                f.write(header + "\n")
-                for _, line in items:
-                    f.write(line + "\n")
-        return rows
+    def put_candle(self, symbol: str, tf: str, candle: Candle) -> None:
+        """
+        Inserta o actualiza una vela (ts, o, h, l, c, v).
+        Reemplaza si el ts coincide con la última; si es más nuevo, hace append; si es más viejo, lo ignora.
+        """
+        if tf not in _VALID_TFS:
+            return
+        key = (symbol, tf)
+        with self._lock:
+            buf = self._candles[key]
+            if buf and candle[0] == buf[-1][0]:
+                buf[-1] = candle
+            elif not buf or candle[0] > buf[-1][0]:
+                buf.append(candle)
+            # si llega más viejo, se ignora
 
-    def last_close(self, symbol: str, timeframe: str) -> Optional[float]:
-        rows = self._fetch(symbol, timeframe, limit=1)
-        return rows[-1]["close"] if rows else None
+    def put_last_price(self, symbol: str, px: float, ts_ms: Optional[int] = None) -> None:
+        """
+        Actualiza el último precio de un símbolo y su timestamp (ms).
+
+        Importante: el timestamp debe venir del broker/datos. Si ts_ms es None,
+        NO se debe inventar con reloj del VPS, para no contaminar monitor/logs.
+        """
+        with self._lock:
+            self._last_price[symbol] = float(px)
+            if ts_ms is not None:
+                self._last_ts[symbol] = int(ts_ms)
+
+    # -------------------- Readers --------------------
+
+    def get_last_price(self, symbol: str) -> Optional[float]:
+        """
+        Devuelve el último precio conocido (o None si no existe).
+        """
+        with self._lock:
+            return self._last_price.get(symbol)
+
+    def get_last_price_ts(self, symbol: str) -> Optional[int]:
+        """
+        Devuelve el ts_ms de la última actualización de precio (o None).
+        """
+        with self._lock:
+            return self._last_ts.get(symbol)
+
+    def get_candles(self, symbol: str, tf: str, limit: int) -> List[Candle]:
+        """
+        Devuelve hasta 'limit' velas más recientes como lista (copia).
+        Si no hay velas o limit <= 0, devuelve [].
+        """
+        if limit <= 0:
+            return []
+        key = (symbol, tf)
+        with self._lock:
+            buf = self._candles.get(key)
+            if not buf:
+                return []
+            if limit >= len(buf):
+                return list(buf)
+            # copy slice de las últimas 'limit'
+            return list(buf)[-limit:]
+
+    # -------------------- Maintenance --------------------
+
+    def clear_symbol(self, symbol: str) -> None:
+        """
+        Borra todas las series (todas las TF) y último precio asociadas a un símbolo.
+        """
+        with self._lock:
+            # eliminar series
+            keys = [k for k in self._candles.keys() if k[0] == symbol]
+            for k in keys:
+                self._candles.pop(k, None)
+            # eliminar último precio
+            self._last_price.pop(symbol, None)
+            self._last_ts.pop(symbol, None)
+
+    def series_size(self, symbol: str, tf: str) -> int:
+        """
+        Cantidad de velas almacenadas para (symbol, tf).
+        """
+        key = (symbol, tf)
+        with self._lock:
+            buf = self._candles.get(key)
+            return len(buf) if buf else 0
+
+
+# -------------------- Singleton compartido --------------------
+
+_shared_cache: Optional[MarketDataCache] = None
+_shared_cache_lock = threading.Lock()
+
+
+def get_shared_cache(maxlen_per_series: int = 5000) -> MarketDataCache:
+    """
+    Devuelve el caché compartido (singleton).
+    """
+    global _shared_cache
+    if _shared_cache is None:
+        with _shared_cache_lock:
+            if _shared_cache is None:
+                _shared_cache = MarketDataCache(maxlen_per_series=maxlen_per_series)
+    return _shared_cache

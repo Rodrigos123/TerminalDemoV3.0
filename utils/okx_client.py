@@ -1,4 +1,3 @@
-# C:\btc_test\TerminalDemoV2.0\utils\okx_client.py
 from __future__ import annotations
 import base64, hashlib, hmac, json, time
 from dataclasses import dataclass
@@ -35,6 +34,25 @@ class OKXClient:
         self.timeout = float(timeout)
         self.session = requests.Session()
         self._last_sign = {"ts":"", "sign":""}
+
+    def _norm_inst_id(self, inst_id: Optional[str]) -> str:
+        """
+        Normaliza símbolos tipo BTCUSDT/ETHUSDT al formato OKX instId: BTC-USDT/ETH-USDT.
+        Si ya viene con '-', lo deja. No inventa si no puede inferir.
+        """
+        if inst_id is None:
+            return None
+        s = str(inst_id).strip()
+        if not s:
+            return s
+        if "-" in s:
+            return s
+        su = s.upper()
+        for quote in ("USDT", "USDC", "USD"):
+            if su.endswith(quote) and len(su) > len(quote):
+                base = su[:-len(quote)]
+                return f"{base}-{quote}"
+        return s
 
     # ---------- firma ----------
     def _sign(self, method: str, path: str, body: Optional[dict] = None, params: Optional[dict] = None) -> Dict[str, str]:
@@ -76,15 +94,27 @@ class OKXClient:
         return OKXResponse(code=code, msg=msg, data=data)
 
     # ---------- market ----------
-    def get_ticker(self, instId: str) -> Dict[str, Any]:
+    def get_ticker(
+        self,
+        instId: Optional[str] = None,
+        symbol: Optional[str] = None,
+        inst_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        if instId is None:
+            instId = inst_id or symbol
+        if instId is None:
+            raise TypeError("OKXClient.get_ticker requiere instId (o symbol/inst_id)")
+        instId = self._norm_inst_id(instId)
+
         res = self._request("GET", "/api/v5/market/ticker", params={"instId": instId}, signed=False)
         return {"code": res.code, "msg": res.msg, "data": res.data}
 
     def get_candles(self, instId: str, bar: str = "1m", limit: int = 200) -> Dict[str, Any]:
+        instId = self._norm_inst_id(instId)
         params = {"instId": instId, "bar": bar, "limit": str(int(limit))}
         res = self._request("GET", "/api/v5/market/candles", params=params, signed=False)
         out = []
-        # OKX retorna más reciente primero; devolvemos oldest->newest
         for it in reversed(res.data):
             ts, o, h, l, c = int(it[0]), float(it[1]), float(it[2]), float(it[3]), float(it[4])
             out.append({"ts": ts, "open": o, "high": h, "low": l, "close": c})
@@ -103,11 +133,7 @@ class OKXClient:
                     ordType: str = "market", tdMode: str = "cash",
                     tgtCcy: Optional[str] = None, ccy: Optional[str] = None,
                     px: Optional[str] = None, clOrdId: Optional[str] = None) -> Dict[str, Any]:
-        """
-        POST /api/v5/trade/order
-        - Spot BUY en USDT: usar tgtCcy='quote_ccy' y 'sz' en USDT.
-        - Spot SELL: 'sz' en base (BTC).
-        """
+        instId = self._norm_inst_id(instId)
         body: Dict[str, Any] = {
             "instId": instId,
             "tdMode": tdMode,
@@ -127,6 +153,7 @@ class OKXClient:
         return {"code": res.code, "msg": res.msg, "data": res.data}
 
     def cancel_order(self, instId: str, ordId: str) -> Dict[str, Any]:
+        instId = self._norm_inst_id(instId)
         body = {"instId": instId, "ordId": ordId}
         res = self._request("POST", "/api/v5/trade/cancel-order", body=body, signed=True)
         return {"code": res.code, "msg": res.msg, "data": res.data}
@@ -134,7 +161,7 @@ class OKXClient:
     def get_fills(self, instId: Optional[str] = None, ordId: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:
         params: Dict[str, Any] = {}
         if instId:
-            params["instId"] = instId
+            params["instId"] = self._norm_inst_id(instId)
         if ordId:
             params["ordId"] = ordId
         params["limit"] = str(int(limit))
