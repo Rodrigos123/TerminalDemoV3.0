@@ -440,7 +440,9 @@ class ExecutionEngine:
         if est_lots_val <= 0:
             return OpenResult(ok=False, error="Invalid size")
 
-        self.ensure_status(magic_i, symbol, timeframe="")
+        # Leer tf existente para no pisarlo con string vacío
+        _prev_tf = self._read_status(magic_i).get("tf", "")
+        self.ensure_status(magic_i, symbol, timeframe=_prev_tf)
 
         # Ticker para precio actual
         try:
