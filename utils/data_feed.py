@@ -45,6 +45,12 @@ def _normalize_tf(tf: str) -> str:
         "1m": "1m",
         "min1": "1m",
         "minute": "1m",
+        "15m": "15m",
+        "m15": "15m",
+        "5m": "5m",
+        "m5": "5m",
+        "30m": "30m",
+        "m30": "30m",
     }
     if t in aliases:
         return aliases[t]
