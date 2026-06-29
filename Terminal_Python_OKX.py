@@ -534,7 +534,6 @@ class Terminal:
         # WS habilitado?
         self.ws_enabled = str(self.env.get("WS_ENABLED", "1")).strip().lower() in ("1", "true", "yes")
         self.ws_retry = int(self.env.get("WS_RETRY_SEC", "5"))
-        self.ws_thread: Optional[OkxPrivateWS] = None
 
         self.strategies_dir = resolve_strategies_dir(self.env)
 
@@ -602,21 +601,6 @@ class Terminal:
             strategies_dir=self.strategies_dir,
             found_files=found_files,
         )
-
-        # WS
-        if self.ws_enabled:
-            try:
-                self.ws_thread = OkxPrivateWS(
-                    client=self.client,
-                    on_event=self.ws_router.handle,
-                    retry_sec=self.ws_retry,
-                    verbose=(GLOBAL_VERBOSE == 1),
-                )
-                self.ws_thread.subscribe_orders(None, inst_type="ANY")
-                self.ws_thread.start()
-                _print("[WS] Private orders WS iniciado", verbose_only=True)
-            except Exception:
-                _print("[WS][ERROR] No se pudo iniciar el WS privado:\n" + traceback.format_exc())
 
     def heartbeat(self) -> None:
         cycle = 0
