@@ -107,6 +107,10 @@ class StrategyClass:
                 print(f"[STRAT][{self.magic}][ERR] {e}", flush=True)
             time.sleep(1.0)
     def _loop_once(self) -> None:
+        # Sincronizar _has_position con el estado real del engine antes de evaluar señales.
+        # Necesario para detectar cierres externos (SL/TP ejecutados por el monitor).
+        self._has_position = self._detect_has_position()
+
         candles_raw = self.data_feed.get_candles(self.symbol, self.timeframe, limit=350)
         if not candles_raw:
             return
