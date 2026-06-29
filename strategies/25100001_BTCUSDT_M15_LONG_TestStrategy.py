@@ -105,7 +105,8 @@ class StrategyClass:
                 self._loop_once()
             except Exception as e:
                 print(f"[STRAT][{self.magic}][ERR] {e}", flush=True)
-            time.sleep(1.0)
+            # 5s con posición abierta (monitoreo frecuente), 60s sin posición
+            time.sleep(5.0 if self._has_position else 60.0)
     def _loop_once(self) -> None:
         # Sincronizar _has_position con el estado real del engine antes de evaluar señales.
         # Necesario para detectar cierres externos (SL/TP ejecutados por el monitor).
