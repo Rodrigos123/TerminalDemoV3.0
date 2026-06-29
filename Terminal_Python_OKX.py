@@ -595,7 +595,7 @@ class Terminal:
                 _print(f"[BOOT][ERROR] No se pudo cargar estrategia {spec.name}:\n" + traceback.format_exc())
 
         base_url = getattr(self.client, "base_url", self.env.get("BASE_URL", "https://www.okx.com"))
-        simulated = True
+        simulated = str(self.env.get("SIMULATED_TRADING", "1")).strip().lower() in ("1", "true", "yes")
         print_banner(
             base_url=str(base_url),
             simulated=bool(simulated),
