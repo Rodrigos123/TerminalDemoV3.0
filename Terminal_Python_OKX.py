@@ -689,6 +689,9 @@ class Terminal:
             interval_sec=5.0,
             verbose=(GLOBAL_VERBOSE == 1),
         )
+        # Exponer referencia global para que las estrategias puedan registrarse
+        import utils.sl_tp_monitor as _sltp_mod
+        _sltp_mod._shared_monitor = self.sl_tp_monitor
         self.sl_tp_monitor.start()
 
         try:
