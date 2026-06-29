@@ -252,6 +252,7 @@ class StrategyClass:
         for i in range(len(all_candles) - 1):
             if int(all_candles[i]["ts"]) == ts:
                 return float(all_candles[i + 1]["open"])
+        print(f"[STRAT][{self.magic}][WARN] _get_next_open_for_bar: ts={ts} no encontrado en candles — señal descartada", flush=True)
         return None
 
     # ─────────────────────────────────────────
@@ -380,8 +381,15 @@ class StrategyClass:
         return sum(closes[-length:]) / float(length)
 
     def _calc_atr(self, candles: List[Dict[str, Any]], period: int) -> float:
+        """
+        ATR por método Wilder (compatibilidad MT4/SQ).
+        atr[0]  = SMA de los primeros `period` TRs
+        atr[i]  = (atr[i-1] * (period - 1) + TR[i]) / period
+        """
         if len(candles) <= period:
             return 0.0
+
+        # Calcular todos los TRs
         trs: List[float] = []
         prev_close = float(candles[0]["close"])
         for c in candles[1:]:
@@ -390,9 +398,18 @@ class StrategyClass:
             tr = max(h - l, abs(h - prev_close), abs(l - prev_close))
             trs.append(tr)
             prev_close = float(c["close"])
+
         if len(trs) < period:
             return 0.0
-        return sum(trs[-period:]) / float(period)
+
+        # Semilla: SMA de los primeros `period` TRs
+        atr = sum(trs[:period]) / float(period)
+
+        # Wilder smoothing sobre el resto
+        for tr in trs[period:]:
+            atr = (atr * (period - 1) + tr) / period
+
+        return atr
 
     # ─────────────────────────────────────────
     # MONEY MANAGEMENT / RIESGO
