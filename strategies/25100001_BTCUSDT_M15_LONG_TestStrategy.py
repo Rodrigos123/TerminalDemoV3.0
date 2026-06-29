@@ -488,6 +488,54 @@ class StrategyClass:
     def _rehydrate_from_monitor(self) -> None:
         """
         Restaura estado interno básico desde el monitor.
+        _bars_in_trade se estima desde open_time para que max_bars_in_trade
+        funcione correctamente tras un reinicio del terminal.
         """
         self._has_position = self._detect_has_position()
-        self._bars_in_trade = 0
+        self._bars_in_trade = self._estimate_bars_in_trade()
+
+    def _estimate_bars_in_trade(self) -> int:
+        """
+        Estima cuántas velas han pasado desde que se abrió la posición,
+        leyendo open_time desde pos_{magic}.json.
+        Devuelve 0 si no hay posición o si open_time no está disponible.
+        """
+        if not self._has_position:
+            return 0
+        try:
+            pos_path = MONITOR_DIR / f"pos_{self.magic}.json"
+            if not pos_path.exists():
+                return 0
+            data = json.loads(pos_path.read_text(encoding="utf-8"))
+            open_time_str = data.get("open_time", "")
+            if not open_time_str:
+                return 0
+
+            # Parsear open_time (formato ISO: "2026-06-28T12:34:56.789Z" o similar)
+            from datetime import datetime, timezone
+            open_time_str = open_time_str.replace("Z", "+00:00")
+            open_dt = datetime.fromisoformat(open_time_str)
+            if open_dt.tzinfo is None:
+                open_dt = open_dt.replace(tzinfo=timezone.utc)
+
+            now_dt = datetime.now(tz=timezone.utc)
+            elapsed_sec = (now_dt - open_dt).total_seconds()
+
+            # Duración en segundos por vela según el timeframe
+            tf_map = {
+                "1m": 60, "3m": 180, "5m": 300, "15m": 900,
+                "30m": 1800, "1H": 3600, "2H": 7200, "4H": 14400,
+                "6H": 21600, "12H": 43200, "1D": 86400, "1Dutc": 86400,
+            }
+            tf_sec = tf_map.get(self.timeframe, 900)
+            estimated = max(0, int(elapsed_sec / tf_sec))
+            print(
+                f"[STRAT][{self.magic}] Rehidratando: open_time={open_time_str} "
+                f"elapsed={elapsed_sec:.0f}s tf={self.timeframe}({tf_sec}s) "
+                f"bars_estimadas={estimated}",
+                flush=True,
+            )
+            return estimated
+        except Exception as exc:
+            print(f"[STRAT][{self.magic}][WARN] _estimate_bars_in_trade error: {exc}", flush=True)
+            return 0
