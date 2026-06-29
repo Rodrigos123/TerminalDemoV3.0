@@ -11,6 +11,7 @@ from utils.ws_router import WsRouter
 from utils.okx_ws import OkxPrivateWS
 from utils.order_executor import init_shared_executor
 from utils.engine_execution import init_shared_engine, get_shared_engine
+from utils.sl_tp_monitor import SLTPMonitor
 from utils.snapshots import write_account_and_positions
 from utils.common import read_json, broker_now_iso
 
@@ -497,6 +498,7 @@ class Terminal:
         self.ingestor: Optional[DataIngestor] = None
         self.ws_router: Optional[WsRouter] = None
         self.ws_thread: Optional[OkxPrivateWS] = None
+        self.sl_tp_monitor: Optional[SLTPMonitor] = None
         self.executor = None
 
         # Router WS
@@ -634,6 +636,11 @@ class Terminal:
 
     def stop(self) -> None:
         self.stopping.set()
+        if self.sl_tp_monitor:
+            try:
+                self.sl_tp_monitor.stop()
+            except Exception:
+                pass
         if self.ws_thread:
             try:
                 self.ws_thread.stop()
@@ -675,6 +682,14 @@ class Terminal:
 
         # Ingestor + estrategias
         self.load_and_start_strategies()
+
+        # Monitor de SL/TP — protege posiciones abiertas comparando precio vs SL/TP
+        self.sl_tp_monitor = SLTPMonitor(
+            data_feed=self.data_feed,
+            interval_sec=5.0,
+            verbose=(GLOBAL_VERBOSE == 1),
+        )
+        self.sl_tp_monitor.start()
 
         try:
             self.heartbeat()
