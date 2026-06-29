@@ -521,7 +521,14 @@ class ExecutionEngine:
 
         base_gross, avg_px, fee_base_abs, fee_quote_usdt = self._accum_fills_open(symbol, ordId, retries=6, sleep_s=0.30)
         if base_gross <= 0:
-            avg_px = last
+            # Fills no confirmados tras todos los reintentos.
+            # NO registrar posición con 0 lotes — dejaría estado corrupto.
+            print(f"[ORDER][OPEN][fills] WARN fills_not_confirmed ordId={ordId} — posición NO registrada", flush=True)
+            append_jsonl(self.monitor_dir / "errors.log", {
+                "ts": _now_iso(self.client, self.monitor_dir), "module": "engine",
+                "msg": "fills_not_confirmed", "ordId": ordId, "symbol": symbol,
+            })
+            return OpenResult(ok=False, error="fills_not_confirmed")
         fee_open_usdt = fee_quote_usdt + fee_base_abs * (avg_px if avg_px > 0 else last)
         print(f"[ORDER][OPEN][fills] gross={base_gross:.10f} avg_px={avg_px:.6f} fee_usdt={fee_open_usdt:.8f}", flush=True)
 
@@ -616,7 +623,24 @@ class ExecutionEngine:
         symbol = pos["symbol"]
         qty = float(pos["lots"])
         if qty <= 0:
-            return CloseResult(ok=False, error="Invalid lot size")
+            # Posición con lotes inválidos — limpiar estado y memoria para no quedar bloqueado en OPEN.
+            print(f"[ORDER][CLOSE][WARN] lots=0 para magic={magic_i} — limpiando estado a FLAT sin enviar orden", flush=True)
+            with self._lock:
+                ticket_bad = pos.get("ticket", "")
+                self._open_by_ticket.pop(ticket_bad, None)
+                self._open_by_magic.pop(magic_i, None)
+                p = self._pos_file(magic_i)
+                if p.exists():
+                    p.unlink()
+                prev_st = self._read_status(magic_i)
+                self._write_status(magic_i, {
+                    "magic": magic_i,
+                    "symbol": symbol,
+                    "tf": prev_st.get("tf", ""),
+                    "status": "FLAT",
+                    "lots": 0.0,
+                })
+            return CloseResult(ok=False, error="invalid_lot_size")
 
         # Normalizamos exit_type a SL / TP / Exit Signal
         exit_type_norm = _normalize_exit_type(exit_type)
