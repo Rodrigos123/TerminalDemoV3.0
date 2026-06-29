@@ -1,0 +1,23 @@
+# Credenciales — nunca subir al repo
+*.env
+API_KEYs.env
+.env
+
+# Estado del monitor en runtime
+monitor/
+
+# Logs
+*.log
+trade_log.csv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# IDEs
+.vscode/
+.idea/
+*.swp
