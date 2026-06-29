@@ -14,13 +14,18 @@ Lógica de activación (LONG spot):
 
 El cierre se delega a engine.process_close() con exit_type="SL" o "TP",
 usando la misma orden market que el cierre por señal de estrategia.
+
+Notificación a estrategias:
+  - Cada estrategia puede registrar un threading.Event via register_event(magic, event).
+  - Al cerrar por SL/TP, el monitor activa el event del magic correspondiente.
+  - La estrategia espera ese event en su run() en lugar de usar un timer propio.
 """
 
 from __future__ import annotations
 
 import threading
 import time
-from typing import Optional
+from typing import Dict, Optional
 
 from utils.data_feed import DataFeed
 from utils.engine_execution import get_shared_engine
@@ -52,7 +57,25 @@ class SLTPMonitor:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
+        # Events registrados por magic — activados al cerrar por SL/TP
+        self._strategy_events: Dict[int, threading.Event] = {}
+        self._events_lock = threading.Lock()
+
     # ── API pública ──────────────────────────────────────────────────────────
+
+    def register_event(self, magic: int, event: threading.Event) -> None:
+        """
+        Registra el Event de una estrategia para ser notificada al cerrar por SL/TP.
+        Llamar desde la estrategia antes de iniciar su loop.
+        """
+        with self._events_lock:
+            self._strategy_events[magic] = event
+        print(f"[SLTP] Event registrado para magic={magic}", flush=True)
+
+    def unregister_event(self, magic: int) -> None:
+        """Elimina el Event registrado para un magic."""
+        with self._events_lock:
+            self._strategy_events.pop(magic, None)
 
     def start(self) -> None:
         """Inicia el thread daemon del monitor."""
@@ -92,7 +115,6 @@ class SLTPMonitor:
         """
         engine = get_shared_engine()
 
-        # Copia segura sin mantener el lock durante toda la iteración
         with engine._lock:
             positions = list(engine._open_by_ticket.values())
 
@@ -106,17 +128,15 @@ class SLTPMonitor:
 
     def _check_position(self, rec: dict) -> None:
         """Evalúa SL y TP para una posición concreta."""
-        magic   = rec.get("magic")
-        symbol  = rec.get("symbol", "")
-        side    = rec.get("side", "buy")
-        sl      = rec.get("sl")
-        tp      = rec.get("tp")
+        magic  = rec.get("magic")
+        symbol = rec.get("symbol", "")
+        side   = rec.get("side", "buy")
+        sl     = rec.get("sl")
+        tp     = rec.get("tp")
 
-        # Sin SL ni TP definidos → nada que monitorear
         if sl is None and tp is None:
             return
 
-        # Obtener precio actual desde caché
         price = self._data_feed.get_last_price(symbol)
         if price is None or price <= 0:
             print(f"[SLTP][WARN] Sin precio en caché para {symbol} (magic={magic})", flush=True)
@@ -124,12 +144,10 @@ class SLTPMonitor:
 
         if self._verbose:
             print(
-                f"[SLTP] magic={magic} {symbol} precio={price:.6f} "
-                f"sl={sl} tp={tp}",
+                f"[SLTP] magic={magic} {symbol} precio={price:.6f} sl={sl} tp={tp}",
                 flush=True,
             )
 
-        # Evaluación para LONG (único lado soportado actualmente en spot OKX)
         if side == "buy":
             if sl is not None and price <= float(sl):
                 print(
@@ -138,7 +156,7 @@ class SLTPMonitor:
                     flush=True,
                 )
                 self._execute_close(magic, "SL")
-                return  # No evaluar TP si ya se cerró por SL
+                return
 
             if tp is not None and price >= float(tp):
                 print(
@@ -154,14 +172,14 @@ class SLTPMonitor:
 
     def _execute_close(self, magic: int, exit_type: str) -> None:
         """
-        Delega el cierre al ExecutionEngine.
-        Usa la misma orden market que el cierre por señal de estrategia.
+        Delega el cierre al ExecutionEngine y notifica a la estrategia via Event.
         """
         try:
             engine = get_shared_engine()
             result = engine.process_close(magic=magic, exit_type=exit_type)
             if result.ok:
                 print(f"[SLTP] Cierre {exit_type} OK — magic={magic}", flush=True)
+                self._notify_strategy(magic, exit_type)
             else:
                 print(
                     f"[SLTP][ERROR] Cierre {exit_type} FALLÓ — magic={magic} "
@@ -174,3 +192,14 @@ class SLTPMonitor:
                 f"exit_type={exit_type}: {exc}",
                 flush=True,
             )
+
+    def _notify_strategy(self, magic: int, exit_type: str) -> None:
+        """Activa el Event de la estrategia si está registrado."""
+        with self._events_lock:
+            event = self._strategy_events.get(magic)
+        if event is not None:
+            event.set()
+            print(f"[SLTP] Estrategia notificada — magic={magic} exit_type={exit_type}", flush=True)
+
+# Referencia global — asignada por Terminal al iniciar el monitor
+_shared_monitor: Optional[SLTPMonitor] = None
